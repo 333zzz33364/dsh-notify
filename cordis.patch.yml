@@ -1,0 +1,63 @@
+# dsh-notify bundle patch —— 把通知插件插入 profile 的顶层 entry 列表。
+# 安装（二选一）：
+#   dsh plugin --profile web add github:ikashana/dsh-notify
+#   dsh plugin --profile headless add github:ikashana/dsh-notify
+#
+# 覆盖配置：在 profile 自己的 cordis.patch.yml 里用同一 id 整段替换 config。
+# 注意：非 insert 的 patch 会替换目标行的整个 config 对象 —— 覆盖时请把要保留的键全部重写。
+# 例如：
+#   - id: notify
+#     config:
+#       http:
+#         channels:
+#           - id: ntfy
+#             url: 'https://ntfy.sh/{{topic}}'
+#
+# 下面的默认配置与 lib/index.js 的 DEFAULTS 一致；未写出的键一律走代码默认值
+# （HTTP/A2A/MCP 通道空、语音关、notify 工具关 = 只监听不打扰，配好通道才发）。
+- insert:
+    - id: notify
+      name: 'dsh-notify'
+      config:
+        turnEnd:
+          reasons: [completed, error, blocked, max-tokens]
+          cooldownMs: 10000
+          includeText: false
+          textMaxChars: 500
+        confirmation:
+          approval: true
+          askUserQuestion: auto
+          timeoutMs: 600000
+          notifyDecided: false
+          includeQuestion: true
+          questionMaxChars: 120
+        rootOnly: true
+        http:
+          timeoutMs: 10000
+          retries: 2
+          retryBaseMs: 500
+          channels: []
+        a2a:
+          timeoutMs: 10000
+          retries: 2
+          retryBaseMs: 500
+          channels: []
+        mcp:
+          timeoutMs: 10000
+          retries: 2
+          retryBaseMs: 500
+          channels: []
+        tools:
+          notify:
+            enabled: false
+        sapi:
+          enabled: false
+          template: '任务通知：{{title}}，状态：{{reason}}。'
+          voice: auto
+          queue: merge
+        escalation:
+          sapi: true
+          channelIds: []
+        queue:
+          concurrency: 2
+          flushTimeoutMs: 2000

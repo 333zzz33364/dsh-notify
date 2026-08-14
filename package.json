@@ -1,0 +1,45 @@
+{
+  "name": "dsh-notify",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness (dsh) 任务监控通知插件：turn 结束 / 需人工确认 / 确认超时 / 模型主动 notify 工具四种触发，经 HTTP webhook（QQ机器人/serverchan/钉钉/企微/ntfy）、A2A agent、MCP 工具与 Windows SAPI 语音通道推送。纯 Node、零运行时依赖、免构建 bundle。",
+  "author": "ikashana",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "notify",
+    "webhook",
+    "sapi",
+    "a2a",
+    "mcp",
+    "monitoring"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}
