@@ -9,6 +9,19 @@ A DeepSeek Harness (dsh) task-monitoring notification plugin. While the agent wo
 
 Four channel kinds: HTTP webhooks (QQ bot / serverchan / DingTalk / WeCom / ntfy are the same channel with different endpoints), A2A agents (one-way `message/send`), MCP tools (streamable-http notification bridges), and Windows SAPI local voice. Pure Node, zero runtime dependencies, build-free bundle, installed in the same `dsh.bundle.patch` shape as dsh-desktop-shell.
 
+## This fork: a settings page
+
+Upstream is host-half only, so every knob lives in the profile's `cordis.patch.yml` and needs a restart. This fork adds a browser half and a runtime override layer:
+
+- **Where**: **Settings** → a section titled `14. 任务通知`. The number follows the local tool inventory of the machine this was built on; edit the `label` in `lib/client.js` if it clashes with yours.
+- **Live config**: edits land in `$DSH_HOME/dsh-notify/ui-config.json` and are merged over the patch config at read time through a `Proxy`, so they take effect without a restart. Channel lists and `tools.notify.enabled` still need one (channels are built at startup).
+- **Editable**: the five `turn/end` reasons, cooldown, body preview, approval and question reminders, escalation timeout, voice template / voice / queue mode, root-only scope — all whitelist-validated, out-of-range numbers clamped, unknown keys dropped, a corrupt file treated as "no override".
+- **Endpoints**: `/api/dsh-notify/{config,reset,test,status}`, mounted through `ctx.inject(['webServer'])` so headless deployments keep loading untouched.
+- **Gateway health**: `status` and a test send probe loopback HTTP channels for `/health`, so a dead local relay shows up as "not running" instead of silently swallowing notifications.
+
+See [`PATCH-NOTES.md`](./PATCH-NOTES.md) for the exact diff against upstream 0.1.0.
+
+
 ## Installation
 
 ```sh

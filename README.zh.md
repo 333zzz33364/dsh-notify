@@ -9,6 +9,19 @@ DeepSeek Harness（dsh）任务监控通知插件。agent 跑任务时，把关�
 
 四类通道：HTTP webhook（QQ 机器人 / serverchan / 钉钉 / 企微 / ntfy 是同一通道的不同 endpoint 配置）、A2A agent（`message/send` 单向）、MCP 工具（streamable-http 通知桥）与 Windows SAPI 本地语音。纯 Node、零运行时依赖、免构建 bundle，照 dsh-desktop-shell 的 `dsh.bundle.patch` 形态安装。
 
+## 这个 fork：加了一页设置界面
+
+上游只有宿主半边，所有开关都写在 profile 的 `cordis.patch.yml` 里，改一次要重启。这个 fork 补了浏览器半边和一层运行时覆盖：
+
+- **在哪**：**设置** → 左侧栏「`14. 任务通知`」。编号跟着这台机器的工具清单走；和你的清单撞了，就改 `lib/client.js` 里的 `label`。
+- **改完不用重启**：设置写进 `$DSH_HOME/dsh-notify/ui-config.json`，读配置时用 `Proxy` 现合并，立刻生效。通道列表和 `tools.notify.enabled` 仍要重启（通道对象是启动时建的）。
+- **能改什么**：五个 `turn/end` 触发原因、冷却秒数、带不带正文、审批提醒、提问提醒、超时升级、语音模板 / 音色 / 排队方式、只提醒主会话。全部过白名单——越界数字夹住、不认识的键丢掉、文件坏了当「没覆盖」。
+- **接口**：`/api/dsh-notify/{config,reset,test,status}`，用 `ctx.inject(['webServer'])` 挂载，headless 部署完全不受影响。
+- **网关体检**：`status` 和「发一条测试通知」会去探本机 HTTP 通道的 `/health`，本机中转进程死了会显示「没在跑」，而不是悄悄把通知吞掉。
+
+和上游 0.1.0 的完整差异见 [`PATCH-NOTES.md`](./PATCH-NOTES.md)。
+
+
 ## 安装
 
 ```sh
