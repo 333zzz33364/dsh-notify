@@ -15,7 +15,7 @@ DeepSeek Harness（dsh）任务监控通知插件。agent 跑任务时，把关�
 
 - **在哪**：**设置** → 左侧栏「`14. 任务通知`」。编号跟着这台机器的工具清单走；和你的清单撞了，就改 `lib/client.js` 里的 `label`。
 - **改完不用重启**：设置写进 `$DSH_HOME/dsh-notify/ui-config.json`，读配置时用 `Proxy` 现合并，立刻生效。通道列表和 `tools.notify.enabled` 仍要重启（通道对象是启动时建的）。
-- **能改什么**：五个 `turn/end` 触发原因、冷却秒数、带不带正文、审批提醒、提问提醒、超时升级、语音模板 / 音色 / 排队方式、只提醒主会话。全部过白名单——越界数字夹住、不认识的键丢掉、文件坏了当「没覆盖」。
+- **能改什么**：五个 `turn/end` 触发原因、提醒前等几秒、带不带正文、审批提醒、提问提醒、超时升级、语音模板 / 音色 / 排队方式、只提醒主会话。全部过白名单——越界数字夹住、不认识的键丢掉、文件坏了当「没覆盖」。
 - **接口**：`/api/dsh-notify/{config,reset,test,status}`，用 `ctx.inject(['webServer'])` 挂载，headless 部署完全不受影响。
 - **网关体检**：`status` 和「发一条测试通知」会去探本机 HTTP 通道的 `/health`，本机中转进程死了会显示「没在跑」，而不是悄悄把通知吞掉。
 
@@ -54,9 +54,9 @@ dsh plugin --profile headless add github:ikashana/dsh-notify
 
 ### 1. turn 结束（自动）
 
-监听 `session/event` 的 `turn/end`。`reason.kind` 白名单默认 `[completed, error, blocked, max-tokens]`（aborted 是用户主动取消，默认不打扰，可配开）。turn 结束后的冷却窗口（默认 10 秒）内出现新 `turn/start` 就取消发送——连续多轮任务只报最终状态。只通知根会话（subagent 子会话不发，可配开）。时长 = turn/start 与 turn/end 事件信封 time 之差。
+监听 `session/event` 的 `turn/end`。`reason.kind` 白名单默认 `[completed, error, blocked, max-tokens]`（aborted 是用户主动取消，默认不打扰，可配开）。turn 结束后先等 `turnEnd.cooldownMs`（默认 10 秒）再发，这段等待里出现新 `turn/start` 就取消发送——连续多轮任务只报最终状态；填 0 就是结束即发。只通知根会话（subagent 子会话不发，可配开）。时长 = turn/start 与 turn/end 事件信封 time 之差。
 
-**dispose 补发**：冷却窗口内的待发通知，在插件销毁（进程退出/HMR 热卸载）时不再等待冷却，直接补发——headless 一次性任务跑完即退出，这是最后一条状态送出去的时机。窗口内已被新 turn/start 取消的条目不补发（取消语义保持）。
+**dispose 补发**：还在等待窗口里的待发通知，在插件销毁（进程退出/HMR 热卸载）时不再等待，直接补发——headless 一次性任务跑完即退出，这是最后一条状态送出去的时机。窗口内已被新 turn/start 取消的条目不补发（取消语义保持）。
 
 ### 2. 需人工确认
 
@@ -119,7 +119,7 @@ spawn **powershell.exe**（Windows PowerShell 5.1，不是 pwsh）`-NoProfile -N
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `turnEnd.reasons` | `[completed, error, blocked, max-tokens]` | 触发白名单；显式 `[]` 关闭本触发源 |
-| `turnEnd.cooldownMs` | `10000` | turn 结束后的安静窗口（ms），窗口内新 turn 则取消 |
+| `turnEnd.cooldownMs` | `10000` | 结束后等多久再发（ms，`0` = 立刻）。等待期间来了新 turn 就取消 |
 | `turnEnd.includeText` | `false` | 正文预览开关（最近 assistant 文本） |
 | `turnEnd.textMaxChars` | `500` | 正文截断字符数 |
 | `confirmation.approval` | `true` | approval/asked 通知开关 |
