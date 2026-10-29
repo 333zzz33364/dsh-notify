@@ -35,6 +35,7 @@
 - `lib/settings-api.js`
   - 新增 `GET/POST /sessions`：最近 30 个对话（标题 + 时间 + 是否单独改过 + 是否正在跑）与单个对话的开关
   - 列表跳过 `storages/workspace.json` 里 `global.archivedSessionIds` 记录的已归档对话
+  - 列表跳过空对话：投影缓存里 `titleInput.count` 为 0 且没有标题的（点进去没说话就离开留下的壳），侧栏里不显示，这里也不列
 - `lib/client.js`
   - 设置页新增「通知开关」一段：总开关、新对话默认、按对话管理列表
   - 「什么时候提醒」补三项：同对话最小间隔、这轮没干活就不提醒、只提醒你发起的

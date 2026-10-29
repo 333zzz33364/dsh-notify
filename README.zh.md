@@ -16,7 +16,7 @@ DeepSeek Harness（dsh）任务监控通知插件。agent 跑任务时，把关�
 - **在哪**：**设置** → 左侧栏「`14. 任务通知`」。编号跟着这台机器的工具清单走；和你的清单撞了，就改 `lib/client.js` 里的 `label`。
 - **改完不用重启**：设置写进 `$DSH_HOME/dsh-notify/ui-config.json`，读配置时用 `Proxy` 现合并，立刻生效。通道列表和 `tools.notify.enabled` 仍要重启（通道对象是启动时建的）。
 - **能改什么**：五个 `turn/end` 触发原因、提醒前等几秒、同一对话最少隔几秒、这轮没干活就不提醒、只提醒你发起的、带不带正文、审批提醒、提问提醒、超时升级、语音模板 / 音色 / 排队方式、只提醒主会话。全部过白名单——越界数字夹住、不认识的键丢掉、文件坏了当「没覆盖」。
-- **通知开关**：总开关、新对话默认、以及**按对话单独开关**（设置页列出最近 30 个对话，一个一行；**已归档的对话不列**）。会话级的写在 `$DSH_HOME/dsh-notify/sessions.json`，和 `ui-config.json` 分开存，所以「恢复默认」不会顺手清掉每个对话的开关。
+- **通知开关**：总开关、新对话默认、以及**按对话单独开关**（设置页列出最近 30 个对话，一个一行；**已归档的对话不列**；点进去一句没说就走的空对话也不列）。会话级的写在 `$DSH_HOME/dsh-notify/sessions.json`，和 `ui-config.json` 分开存，所以「恢复默认」不会顺手清掉每个对话的开关。
 - **接口**：`/api/dsh-notify/{config,reset,test,status,sessions}`，用 `ctx.inject(['webServer'])` 挂载，headless 部署完全不受影响。
 - **网关体检**：`status` 和「发一条测试通知」会去探本机 HTTP 通道的 `/health`，本机中转进程死了会显示「没在跑」，而不是悄悄把通知吞掉。
 - **网关看护**（`http.supervisor`）：配了 `commands` 之后，看护会隔一段时间探一次本机通道的 `/health`，掉了就按命令拉起来（带冷却，不会疯狂重试）。只照看 loopback 地址。启动命令要能让新进程脱离 DSH——Windows 上用 `wscript.exe` 跑一个 vbs 最稳；直接 `spawn` PowerShell 加 detached 会因为拿不到控制台而让 WinRT toast 初始化失败。
