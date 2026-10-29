@@ -19,9 +19,14 @@
     - id: notify
       name: 'dsh-notify'
       config:
+        enabled: true
+        sessionDefault: true
         turnEnd:
           reasons: [completed, error, blocked, max-tokens]
-          cooldownMs: 10000
+          cooldownMs: 15000
+          minIntervalMs: 90000
+          requireTools: true
+          sources: [user, qq]
           includeText: false
           textMaxChars: 500
         confirmation:
@@ -36,6 +41,14 @@
           timeoutMs: 10000
           retries: 2
           retryBaseMs: 500
+          # 网关看护：本机那个常驻弹窗进程掉了就自己拉起来。
+          # 命令必须让它「脱离当前 node 进程」（用 wscript.exe 跑 vbs 最稳），
+          # 否则 DSH 一退出子进程会跟着没。
+          supervisor:
+            enabled: false
+            intervalMs: 30000
+            cooldownMs: 60000
+            commands: {}
           channels: []
         a2a:
           timeoutMs: 10000

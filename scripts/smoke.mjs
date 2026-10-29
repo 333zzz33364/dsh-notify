@@ -5,6 +5,9 @@
 // 含 dispose 补发语义）。
 
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createQueue, retryTask, sleep } from '../lib/queue.js'
 import { createHttpChannel, prepareRequest, resolveSecrets } from '../lib/channels/http.js'
 import { createA2aChannel } from '../lib/channels/a2a.js'
@@ -19,6 +22,10 @@ import {
 import {
   askUserQuestionEnabled, installConfirmationTrigger, installTurnEndTrigger, parseQuestions,
 } from '../lib/triggers.js'
+import {
+  clearSessionOverrides, readSessionOverrides, sessionsPath, writeSessionOverride, writeSessionOverrides,
+} from '../lib/runtime-config.js'
+import { isLoopback, superviseStep } from '../lib/supervisor.js'
 
 let passed = 0
 const failed = []
@@ -300,6 +307,7 @@ await test('触发源1：turn/end 冷却去抖 + 白名单 + 根会话过滤', a
   ctx.advance(2_000)
   assert.equal(got.length, 0, 'subagent 子会话不发')
   ctx.emit('session/event', root, ev('turn/start', { turn: 3 }, t0))
+  ctx.emit('session/event', root, ev('tool/call', { turn: 3, step: 1, callId: 'c1', name: 'bash' }, t0 + 1_000))
   ctx.emit('session/event', root, ev('turn/end', { turn: 3, reason: { kind: 'error' } }, t0 + 30_000))
   ctx.advance(2_000)
   assert.equal(got.length, 1)
@@ -423,6 +431,7 @@ await test('触发源1：turn/end 后立即 dispose 补发通知（headless 退�
   const root = mkSession('s1')
   const t0 = Date.now()
   ctx.emit('session/event', root, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', root, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash' }, t0 + 1_000))
   ctx.emit('session/event', root, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 42_000))
   assert.equal(got.length, 0, '冷却窗口（60s）内不应发送')
   dispose() // 进程退出：冷却等待无意义，必须补发
@@ -430,6 +439,164 @@ await test('触发源1：turn/end 后立即 dispose 补发通知（headless 退�
   assert.equal(got[0].kind, 'turn-end')
   assert.equal(got[0].detail.kind, 'completed')
   assert.equal(got[0].detail.duration, '42s')
+})
+
+await test('触发源1：requireTools 静默纯对话轮 + minIntervalMs 限流', async () => {
+  const ctx = fakeCtx()
+  const got = []
+  const notify = (kind, detail) => got.push({ kind, detail })
+  const dispose = installTurnEndTrigger(ctx, {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, minIntervalMs: 600_000, requireTools: true },
+    rootOnly: true,
+  }, { notify, isRootSession: () => true })
+  const session = mkSession('s1')
+  const t0 = Date.now()
+
+  // 纯对话轮：没碰工具 → 静默
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 1_000))
+  ctx.advance(0)
+  assert.equal(got.length, 0, '没碰工具的轮次不通知')
+
+  // 干活轮：有 tool/call → 发
+  ctx.emit('session/event', session, ev('turn/start', { turn: 2 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 2, step: 1, callId: 'c1', name: 'bash' }, t0 + 500))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, t0 + 2_000))
+  ctx.advance(0)
+  assert.equal(got.length, 1, '干活轮应通知')
+
+  // 最小间隔内再来一轮：不重复弹
+  ctx.emit('session/event', session, ev('turn/start', { turn: 3 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 3, step: 1, callId: 'c2', name: 'bash' }, t0 + 500))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 3, reason: { kind: 'completed' } }, t0 + 3_000))
+  ctx.advance(0)
+  assert.equal(got.length, 1, '最小间隔内不重复弹')
+  dispose()
+})
+
+await test('触发源1：sources 只放行本人发起的轮次（定时/QQ桥等自动轮次静默）', async () => {  const ctx = fakeCtx()
+  const got = []
+  const notify = (kind, detail) => got.push({ kind, detail })
+  const dispose = installTurnEndTrigger(ctx, {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, minIntervalMs: 0, requireTools: true, sources: ['user'] },
+    rootOnly: true,
+  }, { notify, isRootSession: () => true })
+  const session = mkSession('s1')
+  const t0 = Date.now()
+
+  // 定时任务发起的一轮：干过活，但来源不在白名单 → 静默
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('user/message', { source: { kind: 'schedule' }, role: 'user', content: [] }, t0 + 10))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash' }, t0 + 500))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 1_000))
+  ctx.advance(0)
+  assert.equal(got.length, 0, '定时任务轮次静默')
+
+  // 本人发起的一轮：发
+  ctx.emit('session/event', session, ev('turn/start', { turn: 2 }, t0))
+  ctx.emit('session/event', session, ev('user/message', { source: { kind: 'user' }, role: 'user', content: [] }, t0 + 10))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 2, step: 1, callId: 'c2', name: 'bash' }, t0 + 500))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, t0 + 1_000))
+  ctx.advance(0)
+  assert.equal(got.length, 1, '本人发起的轮次应通知')
+  dispose()
+})
+
+await test('触发源1：任务还在跑（有后台 job / goal 未收尾）时不通知', async () => {
+  const ctx = fakeCtx()
+  const got = []
+  const notify = (kind, detail) => got.push({ kind, detail })
+  let busy = true
+  const dispose = installTurnEndTrigger(ctx, {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, minIntervalMs: 0, requireTools: true, sources: [] },
+    rootOnly: true,
+  }, { notify, isRootSession: () => true, isSessionBusy: () => busy })
+  const session = mkSession('s1')
+  const t0 = Date.now()
+
+  // 还有 job 在跑：这一轮结束也不算完成
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'pwsh' }, t0 + 500))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 1_000))
+  ctx.advance(0)
+  assert.equal(got.length, 0, '后台任务没结束就不提醒')
+
+  // job 结束后的下一轮：正常发
+  busy = false
+  ctx.emit('session/event', session, ev('turn/start', { turn: 2 }, t0 + 2_000))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 2, step: 1, callId: 'c2', name: 'pwsh' }, t0 + 2_500))
+  ctx.emit('session/event', session, ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, t0 + 3_000))
+  ctx.advance(0)
+  assert.equal(got.length, 1, '任务收尾后应提醒')
+  dispose()
+})
+
+await test('runtime：按对话开关的覆盖表（写/读/删/清洗，不碰真实目录）', () => {  const prev = process.env.DSH_HOME
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-notify-smoke-'))
+  try {
+    assert.deepEqual(readSessionOverrides(), {})
+    assert.ok(sessionsPath().endsWith('sessions.json'))
+    writeSessionOverride('session-abc', false)
+    assert.equal(readSessionOverrides()['session-abc'], false)
+    writeSessionOverride('session-abc', true)
+    assert.equal(readSessionOverrides()['session-abc'], true)
+    writeSessionOverride('session-abc', null)
+    assert.deepEqual(readSessionOverrides(), {}, 'null 表示回到默认')
+    // 非法键与非法值一律丢弃
+    writeSessionOverrides({ 'bad key': true, good: false, wrongType: 'yes' })
+    assert.deepEqual(Object.keys(readSessionOverrides()), ['good'])
+    clearSessionOverrides()
+    assert.deepEqual(readSessionOverrides(), {})
+  } finally {
+    if (prev === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prev
+  }
+})
+
+await test('网观看护：只拉 loopback、只认配了命令的通道、按冷却限流', () => {
+  assert.equal(isLoopback('http://127.0.0.1:9775/notify'), true)
+  assert.equal(isLoopback('http://localhost:8080/x'), true)
+  assert.equal(isLoopback('https://ntfy.sh/topic'), false)
+  assert.equal(isLoopback('not a url'), false)
+
+  const channels = [
+    { id: 'toast', url: 'http://127.0.0.1:9775/notify' },
+    { id: 'remote', url: 'https://ntfy.sh/topic' },
+    { id: 'no-command', url: 'http://127.0.0.1:9999/notify' },
+  ]
+  const supervisor = {
+    enabled: true,
+    cooldownMs: 60_000,
+    commands: {
+      toast: ['powershell.exe', '-File', 'gateway.ps1'],
+      remote: ['whatever.exe'],
+    },
+  }
+  const lastLaunch = new Map()
+  const now = 1_000_000
+
+  // 全挂了：只有配了命令的 loopback 会被拉，远端不动
+  let due = superviseStep({ channels, supervisor, alive: () => false, now, lastLaunch })
+  assert.deepEqual(due.map(item => item.id), ['toast'])
+  lastLaunch.set('toast', now)
+
+  // 冷却内不再拉
+  due = superviseStep({ channels, supervisor, alive: () => false, now: now + 30_000, lastLaunch })
+  assert.deepEqual(due, [])
+
+  // 冷却过了才再拉
+  due = superviseStep({ channels, supervisor, alive: () => false, now: now + 61_000, lastLaunch })
+  assert.deepEqual(due.map(item => item.id), ['toast'])
+
+  // 探到活着就不拉
+  due = superviseStep({ channels, supervisor, alive: () => true, now: now + 200_000, lastLaunch })
+  assert.deepEqual(due, [])
+
+  // 看护关着：一律不拉
+  due = superviseStep({
+    channels, supervisor: { ...supervisor, enabled: false }, alive: () => false, now: now + 500_000, lastLaunch,
+  })
+  assert.deepEqual(due, [])
 })
 
 await test('触发源1：冷却窗口内出现新 turn/start 后 dispose 不补发', () => {

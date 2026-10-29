@@ -15,9 +15,11 @@ DeepSeek Harness（dsh）任务监控通知插件。agent 跑任务时，把关�
 
 - **在哪**：**设置** → 左侧栏「`14. 任务通知`」。编号跟着这台机器的工具清单走；和你的清单撞了，就改 `lib/client.js` 里的 `label`。
 - **改完不用重启**：设置写进 `$DSH_HOME/dsh-notify/ui-config.json`，读配置时用 `Proxy` 现合并，立刻生效。通道列表和 `tools.notify.enabled` 仍要重启（通道对象是启动时建的）。
-- **能改什么**：五个 `turn/end` 触发原因、提醒前等几秒、带不带正文、审批提醒、提问提醒、超时升级、语音模板 / 音色 / 排队方式、只提醒主会话。全部过白名单——越界数字夹住、不认识的键丢掉、文件坏了当「没覆盖」。
-- **接口**：`/api/dsh-notify/{config,reset,test,status}`，用 `ctx.inject(['webServer'])` 挂载，headless 部署完全不受影响。
+- **能改什么**：五个 `turn/end` 触发原因、提醒前等几秒、同一对话最少隔几秒、这轮没干活就不提醒、只提醒你发起的、带不带正文、审批提醒、提问提醒、超时升级、语音模板 / 音色 / 排队方式、只提醒主会话。全部过白名单——越界数字夹住、不认识的键丢掉、文件坏了当「没覆盖」。
+- **通知开关**：总开关、新对话默认、以及**按对话单独开关**（设置页列出最近 30 个对话，一个一行；**已归档的对话不列**）。会话级的写在 `$DSH_HOME/dsh-notify/sessions.json`，和 `ui-config.json` 分开存，所以「恢复默认」不会顺手清掉每个对话的开关。
+- **接口**：`/api/dsh-notify/{config,reset,test,status,sessions}`，用 `ctx.inject(['webServer'])` 挂载，headless 部署完全不受影响。
 - **网关体检**：`status` 和「发一条测试通知」会去探本机 HTTP 通道的 `/health`，本机中转进程死了会显示「没在跑」，而不是悄悄把通知吞掉。
+- **网关看护**（`http.supervisor`）：配了 `commands` 之后，看护会隔一段时间探一次本机通道的 `/health`，掉了就按命令拉起来（带冷却，不会疯狂重试）。只照看 loopback 地址。启动命令要能让新进程脱离 DSH——Windows 上用 `wscript.exe` 跑一个 vbs 最稳；直接 `spawn` PowerShell 加 detached 会因为拿不到控制台而让 WinRT toast 初始化失败。
 
 和上游 0.1.0 的完整差异见 [`PATCH-NOTES.md`](./PATCH-NOTES.md)。
 
@@ -54,7 +56,12 @@ dsh plugin --profile headless add github:ikashana/dsh-notify
 
 ### 1. turn 结束（自动）
 
-监听 `session/event` 的 `turn/end`。`reason.kind` 白名单默认 `[completed, error, blocked, max-tokens]`（aborted 是用户主动取消，默认不打扰，可配开）。turn 结束后先等 `turnEnd.cooldownMs`（默认 10 秒）再发，这段等待里出现新 `turn/start` 就取消发送——连续多轮任务只报最终状态；填 0 就是结束即发。只通知根会话（subagent 子会话不发，可配开）。时长 = turn/start 与 turn/end 事件信封 time 之差。
+监听 `session/event` 的 `turn/end`。`reason.kind` 白名单默认 `[completed, error, blocked, max-tokens]`（aborted 是用户主动取消，默认不打扰，可配开）。turn 结束后先等 `turnEnd.cooldownMs`（默认 90 秒）再发，这段等待里出现新 `turn/start` 就取消发送——连续多轮任务只报最终状态；填 0 就是结束即发。只通知根会话（subagent 子会话不发，可配开）。时长 = turn/start 与 turn/end 事件信封 time 之差。
+
+两道「任务进行中不打扰」的闸：
+
+- `turnEnd.requireTools`（默认 `true`）：这一轮没出现 `tool/call` 就不发——纯陪聊轮静默，只有真干过活的轮才值得报。
+- `turnEnd.minIntervalMs`（默认 10 分钟）：同一会话两次通知之间的最小间隔，收尾后又被追着问不会连弹。设 `0` 关闭。
 
 **dispose 补发**：还在等待窗口里的待发通知，在插件销毁（进程退出/HMR 热卸载）时不再等待，直接补发——headless 一次性任务跑完即退出，这是最后一条状态送出去的时机。窗口内已被新 turn/start 取消的条目不补发（取消语义保持）。
 
@@ -118,8 +125,13 @@ spawn **powershell.exe**（Windows PowerShell 5.1，不是 pwsh）`-NoProfile -N
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| `enabled` | `true` | 总开关；关掉一条通知都不发（测试按钮不受影响） |
+| `sessionDefault` | `true` | 新对话默认是否通知；单个对话可在设置页覆盖 |
 | `turnEnd.reasons` | `[completed, error, blocked, max-tokens]` | 触发白名单；显式 `[]` 关闭本触发源 |
-| `turnEnd.cooldownMs` | `10000` | 结束后等多久再发（ms，`0` = 立刻）。等待期间来了新 turn 就取消 |
+| `turnEnd.cooldownMs` | `15000` | 结束后等多久再发（ms，`0` = 立刻）。等待期间来了新 turn 就取消 |
+| `turnEnd.minIntervalMs` | `90000` | 同一会话两次通知的最小间隔（ms，`0` = 关闭） |
+| `turnEnd.requireTools` | `true` | 本轮没调过工具就不发（纯陪聊轮静默） |
+| `turnEnd.sources` | `[user, qq]` | 只给这些来源发起的轮次发通知；`[]` = 不过滤 |
 | `turnEnd.includeText` | `false` | 正文预览开关（最近 assistant 文本） |
 | `turnEnd.textMaxChars` | `500` | 正文截断字符数 |
 | `confirmation.approval` | `true` | approval/asked 通知开关 |
@@ -132,6 +144,10 @@ spawn **powershell.exe**（Windows PowerShell 5.1，不是 pwsh）`-NoProfile -N
 | `http.timeoutMs` | `10000` | HTTP 请求超时 |
 | `http.retries` | `2` | 单通道重试次数 |
 | `http.retryBaseMs` | `500` | 指数退避基数（500, 1000, 2000…） |
+| `http.supervisor.enabled` | `false` | 网关看护：本机常驻进程掉了自动拉起 |
+| `http.supervisor.intervalMs` | `30000` | 多久探一次 `/health` |
+| `http.supervisor.cooldownMs` | `60000` | 两次拉起之间至少隔多久 |
+| `http.supervisor.commands` | `{}` | `{ 通道id: [命令, 参数…] }`；必须能脱离当前进程启动 |
 | `http.channels` | `[]` | HTTP 通道列表，见下 |
 | `a2a.timeoutMs` / `a2a.retries` / `a2a.retryBaseMs` | 同 http | A2A 全局默认 |
 | `a2a.channels` | `[]` | A2A 通道列表：`{ id, agentUrl, template?, fallback? }` |
