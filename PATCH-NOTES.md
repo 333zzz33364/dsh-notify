@@ -30,15 +30,25 @@
   - 定时器到达时按 `lastSentAt` + `minIntervalMs` 限流
 - `lib/runtime-config.js`
   - `EDITABLE` / `RANGES` 增加 `enabled`、`sessionDefault`、`turnEnd.minIntervalMs`、`turnEnd.requireTools`、`turnEnd.sources`
+  - `EDITABLE` 增加 `style.appName` / `style.icon`（2026-10-29）：只用来记住设置页用过什么，真正生效靠宿主转给本机网关卡
   - 新增按会话覆盖表 `sessions.json`（`readSessionOverrides` / `writeSessionOverride` / `clearSessionOverrides`），与 `ui-config.json` 分开存
   - 新增 `homeDir()`，供设置页定位 `storages/session_projcache`
 - `lib/settings-api.js`
   - 新增 `GET/POST /sessions`：最近 30 个对话（标题 + 时间 + 是否单独改过 + 是否正在跑）与单个对话的开关
   - 列表跳过 `storages/workspace.json` 里 `global.archivedSessionIds` 记录的已归档对话
   - 列表跳过空对话：投影缓存里 `titleInput.count` 为 0 且没有标题的（点进去没说话就离开留下的壳），侧栏里不显示，这里也不列
+  - 新增 `POST /style`（2026-10-29）：把 `{appName | iconBase64+iconName | iconPath | resetIcon}` 转给本机 toast 网关的
+    `POST /style`，成功后把最终值记进覆盖层。只发给 loopback 通道——样式改的是本机开始菜单快捷方式，
+    远端 webhook 没有这个东西
+  - `GET /config` / `GET /status` 多回一个 `gatewayStyle`：网关实际生效的 `{appName, icon, aumid}`，
+    设置页拿它显示「当前值」，问不到就是 `null`
 - `lib/client.js`
   - 设置页新增「通知开关」一段：总开关、新对话默认、按对话管理列表
   - 「什么时候提醒」补三项：同对话最小间隔、这轮没干活就不提醒、只提醒你发起的
+  - 2026-10-29：所有分类改成可折叠表头（`段` 组件），展开状态按标题记在 `localStorage`，
+    默认只有「通知开关」是展开的
+  - 2026-10-29：新增「通知样式」一段：改通知头部的应用名、选本地图片当图标（读成 base64 交给网关）、
+    恢复默认图标、试发一条。图标文件不占配置体积，落在网关目录的 `custom-icon.*`
 - `package.json`
   - `exports` 加 `"./client": "./lib/client.js"`
   - `dsh` 加 `client` 声明（`platform: web` + inject 三个客户端包）
