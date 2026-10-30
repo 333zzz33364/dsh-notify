@@ -61,6 +61,10 @@ dsh plugin --profile headless add github:ikashana/dsh-notify
 两道「任务进行中不打扰」的闸：
 
 - `turnEnd.requireTools`（默认 `true`）：这一轮没出现 `tool/call` 就不发——纯陪聊轮静默，只有真干过活的轮才值得报。
+- `turnEnd.quietDuringTurn`（默认 `true`）：turn/start 到 turn/end 之间算「这一轮还在跑」，这期间**确认超时升级只记账不发送**，等收尾时合并报一次。首次提醒（审批、提问）不在此列——它们本来就意味着「有人在等」，攒到收尾才说就是漏报。
+- `turnEnd.reportPending`（默认 `true`）：收尾那条通知正文里附上「期间有 N 次待确认（首条：…）」；关掉则只清零计数、不显示。
+- `confirmation.smartApproval`（默认 `true`）：**自动放行的审批不通知**。`approval/asked` 之后先等 `smartApprovalWaitMs` 再决定发不发——本机 `dsh-purge` 的 approval bypass 是同步 `return 'allowed-once'`，asked 与 decided 在同一个 tick 内接踵而至；人真的去点不可能这么快。窗口内被放行的静默，没被放行的（拒绝/取消/不可用）照样说一声。
+- `confirmation.smartApprovalWaitMs`（默认 `1000`）：上面那个沉默窗口的毫秒数。填 `0` 等于关掉判定，退回「一有 asked 就发」。
 - `turnEnd.minIntervalMs`（默认 10 分钟）：同一会话两次通知之间的最小间隔，收尾后又被追着问不会连弹。设 `0` 关闭。
 
 **dispose 补发**：还在等待窗口里的待发通知，在插件销毁（进程退出/HMR 热卸载）时不再等待，直接补发——headless 一次性任务跑完即退出，这是最后一条状态送出去的时机。窗口内已被新 turn/start 取消的条目不补发（取消语义保持）。
@@ -113,6 +117,14 @@ spawn **powershell.exe**（Windows PowerShell 5.1，不是 pwsh）`-NoProfile -N
 
 `{{title}}`（会话标题，取不到为「无标题」）`{{reason}}` `{{text}}` `{{duration}}` `{{timestamp}}`，缺字段渲染为空串。
 
+条件段：`{{#duration}}…{{/duration}}` 在该字段为空（缺失 / null / 空串）时整段不输出，字段有值才渲染内文（内文照常替换变量，可嵌套）。数字 `0` 算有值，不会被吞。用来避免「用时的前缀留下来、时间却没有」这种半截文案：
+
+```text
+模板：【{{reason}}】{{text}}{{#duration}}｜用时 {{duration}}{{/duration}}
+任务结束   → 【任务完成】｜用时 3m 12s
+需人工确认 → 【需要人工确认】npm
+```
+
 | reason 文案 | |
 |---|---|
 | turn/end | 任务完成 / 任务出错 / 任务被阻塞 / 超出 token 上限 / 任务已中止 / 任务中断 |
@@ -131,6 +143,10 @@ spawn **powershell.exe**（Windows PowerShell 5.1，不是 pwsh）`-NoProfile -N
 | `turnEnd.cooldownMs` | `15000` | 结束后等多久再发（ms，`0` = 立刻）。等待期间来了新 turn 就取消 |
 | `turnEnd.minIntervalMs` | `90000` | 同一会话两次通知的最小间隔（ms，`0` = 关闭） |
 | `turnEnd.requireTools` | `true` | 本轮没调过工具就不发（纯陪聊轮静默） |
+| `turnEnd.quietDuringTurn` | `true` | 这一轮还在跑时，确认超时升级先攒着（首次提醒不受影响） |
+| `turnEnd.reportPending` | `true` | 收尾通知里附「期间有 N 次待确认」 |
+| `confirmation.smartApproval` | `true` | 自动放行的审批不通知，只提醒真正卡住等人的 |
+| `confirmation.smartApprovalWaitMs` | `1000` | 沉默窗口（ms）：等这么久还没 decided 才算「真在等人」 |
 | `turnEnd.sources` | `[user, qq]` | 只给这些来源发起的轮次发通知；`[]` = 不过滤 |
 | `turnEnd.includeText` | `false` | 正文预览开关（最近 assistant 文本） |
 | `turnEnd.textMaxChars` | `500` | 正文截断字符数 |

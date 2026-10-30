@@ -20,7 +20,8 @@ import {
   summarizeQuestions, truncate,
 } from '../lib/templates.js'
 import {
-  askUserQuestionEnabled, installConfirmationTrigger, installTurnEndTrigger, parseQuestions,
+  askUserQuestionEnabled, createTurnTracker, installConfirmationTrigger, installTurnEndTrigger,
+  parseQuestions, pendingNote,
 } from '../lib/triggers.js'
 import {
   clearSessionOverrides, readSessionOverrides, sessionsPath, writeSessionOverride, writeSessionOverrides,
@@ -97,6 +98,24 @@ await test('renderDeep：对象/数组递归渲染，非字符串原样', () => 
     { title: 'T', reason: 'R' },
   )
   assert.deepEqual(out, { a: 'xT', b: ['R', { c: '' }], d: 42 })
+})
+
+await test('render 条件段：有值保留并渲染内文，空值整段丢弃', () => {
+  const t = '【{{reason}}】{{text}}{{#duration}}｜用时 {{duration}}{{/duration}}'
+  // 任务结束：有 duration，text 为空 → 前缀空着，用时显示
+  assert.equal(render(t, { reason: '任务完成', text: '', duration: '3m 12s' }), '【任务完成】｜用时 3m 12s')
+  // 需人工确认：没有 duration → 「用时」连同标签一起消失，不再留半句
+  assert.equal(render(t, { reason: '需要人工确认', text: 'npm', duration: '' }), '【需要人工确认】npm')
+  // 字段缺失 / null 同样当作空
+  assert.equal(render('A{{#duration}}用时{{/duration}}B', { reason: 'x' }), 'AB')
+  assert.equal(render('A{{#duration}}用时{{/duration}}B', { duration: null }), 'AB')
+  // 数字 0 算有值，不能把 0 秒吞掉
+  assert.equal(render('A{{#duration}}用时 {{duration}}{{/duration}}B', { duration: 0 }), 'A用时 0B')
+  // 内文里可以继续用变量，条件段可嵌套
+  assert.equal(render('{{#text}}[{{text}}{{#duration}}/{{duration}}{{/duration}}]{{/text}}', { text: 'T', duration: '1s' }), '[T/1s]')
+  assert.equal(render('{{#text}}[{{#duration}}{{text}}{{/duration}}]{{/text}}', { text: 'T', duration: '' }), '[]')
+  // 空格宽容：花括号里带空格也能识别
+  assert.equal(render('{{ #duration }}x{{ /duration }}', { duration: '1s' }), 'x')
 })
 
 await test('formatDuration：紧凑时长', () => {
@@ -325,6 +344,7 @@ await test('触发源2：approval asked→decided（默认静默）+ ask_user_qu
     confirmation: {
       approval: true,
       askUserQuestion: 'auto',
+      smartApproval: false,
       timeoutMs: 10_000,
       notifyDecided: false,
       questionMaxChars: 120,
@@ -361,12 +381,197 @@ await test('触发源2：approval asked→decided（默认静默）+ ask_user_qu
   dispose()
 })
 
+await test('运行窗口：tracker 进出窗口、记账与取走语义、pendingNote 文案', async () => {
+  const tracker = createTurnTracker()
+  assert.equal(tracker.isRunning('s1'), false, '没有条目一律视为空闲')
+  assert.equal(tracker.hold('s1', 'x'), false, '空闲时不该吞')
+
+  tracker.markStart('s1')
+  assert.equal(tracker.isRunning('s1'), true)
+  assert.equal(tracker.hold('s1', 'bash：需要写文件'), true, '窗口内应吞')
+  assert.equal(tracker.hold('s1', '要删除吗？'), true)
+  assert.equal(tracker.takeHeld('s1').count, 2)
+  assert.equal(tracker.takeHeld('s1'), null, '取过一次就清零')
+
+  tracker.hold('s1', '第二次')
+  tracker.markEnd('s1')
+  assert.equal(tracker.isRunning('s1'), false, 'turn/end 后退出窗口')
+  assert.equal(tracker.hold('s1', 'x'), false, '窗口外照发')
+  assert.equal(tracker.takeHeld('s1').count, 1, '跨 turn 攒下的仍能取到')
+
+  tracker.markStart('s2')
+  tracker.markEnd('s2')
+  assert.equal(tracker.takeHeld('s2'), null, '干净会话不产生 pendingNote')
+
+  assert.equal(pendingNote(null), '')
+  assert.equal(pendingNote({ count: 0, first: '' }), '')
+  assert.equal(pendingNote({ count: 3, first: 'bash：需要写文件' }), '期间有 3 次待确认（首条：bash：需要写文件）')
+  const long = 'x'.repeat(200)
+  assert.ok(pendingNote({ count: 1, first: long }).length < 80, '首条摘要要截断')
+})
+
+await test('运行窗口：这一轮还在跑时确认类只记账，收尾合并成一条带 note 的通知', async () => {
+  const ctx = fakeCtx({ webServer: {} })
+  const got = []
+  const notify = (kind, detail, options) => got.push({ kind, detail, options })
+  const turnTracker = createTurnTracker()
+  const cfg = {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, minIntervalMs: 0, quietDuringTurn: true, reportPending: true },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 10_000, notifyDecided: false, questionMaxChars: 120 },
+    rootOnly: true,
+  }
+  const deps = { notify, isRootSession: () => true, hasWebLayer: () => true, turnTracker }
+  const disposeTurn = installTurnEndTrigger(ctx, cfg, deps)
+  const disposeConf = installConfirmationTrigger(ctx, cfg, deps)
+
+  const session = mkSession('s1')
+  const t0 = Date.now()
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash' }, t0 + 1_000))
+  // 首次确认**不吞**：真在等人的东西，攒到收尾才说就是漏报
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a1', toolName: 'bash', reason: '需要写文件' }, t0 + 2_000))
+  assert.equal(got.length, 1, '审批在窗口内也该立刻发')
+  ctx.emit('session/event', session, ev('approval/decided', { id: 'a1', outcome: 'allowed-once' }, t0 + 2_500))
+
+  // 提问同理，必须穿透
+  ctx.emit('session/event', session, ev('tool/call', {
+    turn: 1, step: 2, callId: 'c2', name: 'ask_user_question',
+    arguments: JSON.stringify({ questions: [{ id: 'q', question: '要删除吗？' }] }),
+  }, t0 + 4_000))
+  assert.equal(got.length, 2, 'ask_user_question 在运行中也要立刻弹')
+  assert.equal(got[1].kind, 'confirmation')
+  assert.equal(got[1].detail.text, '要删除吗？')
+
+  ctx.emit('session/event', session, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 30_000))
+  ctx.advance(10)
+  assert.equal(got.length, 3, '收尾再发一条')
+  assert.equal(got[2].kind, 'turn-end')
+  assert.equal(got[2].detail.note, '', '首次确认没被吞，就没有「期间有 N 次待确认」')
+
+  disposeTurn()
+  disposeConf()
+})
+
+await test('运行窗口：只有超时升级会被攒着，收尾一起报', async () => {
+  const ctx = fakeCtx({ webServer: {} })
+  const got = []
+  const notify = (kind, detail, options) => got.push({ kind, detail, options })
+  const turnTracker = createTurnTracker()
+  const cfg = {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, minIntervalMs: 0, quietDuringTurn: true, reportPending: true },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 5_000, notifyDecided: false, questionMaxChars: 120 },
+    rootOnly: true,
+  }
+  const deps = { notify, isRootSession: () => true, hasWebLayer: () => true, turnTracker }
+  const disposeTurn = installTurnEndTrigger(ctx, cfg, deps)
+  const disposeConf = installConfirmationTrigger(ctx, cfg, deps)
+
+  const session = mkSession('s1')
+  const t0 = Date.now()
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash' }, t0 + 500))
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a1', toolName: 'bash', reason: '没人理它' }, t0 + 1_000))
+  assert.equal(got.length, 1, '首次确认照发')
+  assert.equal(got[0].kind, 'confirmation')
+
+  ctx.advance(6_000) // 超时升级到点：轮次还没结束 → 攒着
+  assert.equal(got.length, 1, '窗口内的升级不弹')
+
+  ctx.emit('session/event', session, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 30_000))
+  ctx.advance(10)
+  assert.equal(got.length, 2)
+  assert.equal(got[1].kind, 'turn-end')
+  assert.equal(got[1].detail.note, '期间有 1 次待确认（首条：bash：没人理它）')
+
+  disposeTurn()
+  disposeConf()
+})
+
+await test('smartApproval：自动放行的审批静默，卡住不动的才提醒', async () => {
+  const ctx = fakeCtx({ webServer: {} })
+  const got = []
+  const notify = (kind, detail) => got.push({ kind, detail })
+  const cfg = {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, quietDuringTurn: true, reportPending: true },
+    confirmation: {
+      approval: true, askUserQuestion: 'auto', smartApproval: true, smartApprovalWaitMs: 1_000,
+      timeoutMs: 0, notifyDecided: false, questionMaxChars: 120,
+    },
+    rootOnly: true,
+  }
+  const turnTracker = createTurnTracker()
+  const deps = { notify, isRootSession: () => true, hasWebLayer: () => true, turnTracker }
+  const disposeTurn = installTurnEndTrigger(ctx, cfg, deps)
+  const disposeConf = installConfirmationTrigger(ctx, cfg, deps)
+
+  const session = mkSession('s1')
+  const t0 = Date.now()
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash' }, t0 + 500))
+
+  // 自动放行：asked 与 decided 在沉默窗口内接踵而至 → 一条都不该发
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a1', toolName: 'pwsh', reason: '放开沙箱' }, t0 + 1_000))
+  assert.equal(got.length, 0, '沉默窗口内先不发')
+  ctx.emit('session/event', session, ev('approval/decided', { id: 'a1', outcome: 'allowed-once' }, t0 + 1_010))
+  ctx.advance(2_000)
+  assert.equal(got.length, 0, '自动放行不打扰')
+
+  // 真卡住：asked 之后没人决定，窗口一过就要喊
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a2', toolName: 'bash', reason: '等你点头' }, t0 + 5_000))
+  assert.equal(got.length, 0)
+  ctx.advance(1_500)
+  assert.equal(got.length, 1, '窗口过了还没人管 → 这就是真在等人')
+  assert.equal(got[0].kind, 'confirmation')
+  assert.equal(got[0].detail.text, 'bash：等你点头')
+
+  // 没被放行也不是噪音：拒绝要说一声
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a3', toolName: 'bash', reason: '想删文件' }, t0 + 8_000))
+  ctx.emit('session/event', session, ev('approval/decided', { id: 'a3', outcome: 'rejected' }, t0 + 8_010))
+  ctx.advance(2_000)
+  assert.equal(got.length, 2)
+  assert.equal(got[1].detail.text, 'bash：想删文件（已拒绝）')
+
+  disposeTurn()
+  disposeConf()
+})
+
+await test('运行窗口：quietDuringTurn=false 恢复逐条发送，reportPending=false 只清零不显示', async () => {
+  const ctx = fakeCtx({ webServer: {} })
+  const got = []
+  const notify = (kind, detail) => got.push({ kind, detail })
+  const turnTracker = createTurnTracker()
+  const cfg = {
+    turnEnd: { reasons: ['completed'], cooldownMs: 0, minIntervalMs: 0, quietDuringTurn: false, reportPending: false },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 10_000, notifyDecided: false, questionMaxChars: 120 },
+    rootOnly: true,
+  }
+  const deps = { notify, isRootSession: () => true, hasWebLayer: () => true, turnTracker }
+  const disposeTurn = installTurnEndTrigger(ctx, cfg, deps)
+  const disposeConf = installConfirmationTrigger(ctx, cfg, deps)
+
+  const session = mkSession('s1')
+  const t0 = Date.now()
+  ctx.emit('session/event', session, ev('turn/start', { turn: 1 }, t0))
+  ctx.emit('session/event', session, ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash' }, t0 + 500))
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a1', toolName: 'bash', reason: 'r1' }, t0 + 1_000))
+  ctx.emit('session/event', session, ev('approval/asked', { id: 'a2', toolName: 'bash', reason: 'r2' }, t0 + 2_000))
+  assert.equal(got.length, 2, '关掉闸之后照旧逐条发')
+
+  ctx.emit('session/event', session, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, t0 + 10_000))
+  ctx.advance(10)
+  assert.equal(got.length, 3)
+  assert.equal(got[2].detail.note, '', 'reportPending=false 时通知正文不带计数')
+
+  disposeTurn()
+  disposeConf()
+})
+
 await test('触发源2：headless auto 不发 ask_user_question，on 模式强制发', async () => {
   const headlessCtx = fakeCtx({})
   const got = []
   const notify = (kind, detail) => got.push({ kind, detail })
   const cfg = {
-    confirmation: { approval: true, askUserQuestion: 'auto', timeoutMs: 10_000, notifyDecided: false, questionMaxChars: 120 },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 10_000, notifyDecided: false, questionMaxChars: 120 },
     rootOnly: true,
   }
   const dispose = installConfirmationTrigger(headlessCtx, cfg, {
@@ -390,7 +595,7 @@ await test('触发源2：确认超时升级（priority）+ 决定到达撤定时
   const got = []
   const notify = (kind, detail, options) => got.push({ kind, detail, options })
   const cfg = {
-    confirmation: { approval: true, askUserQuestion: 'auto', timeoutMs: 10_000, notifyDecided: true, questionMaxChars: 120 },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 10_000, notifyDecided: true, questionMaxChars: 120 },
     rootOnly: true,
   }
   const dispose = installConfirmationTrigger(ctx, cfg, {
@@ -622,7 +827,7 @@ await test('触发源2：approval 挂起未决时 dispose 补发 escalation', ()
   const got = []
   const notify = (kind, detail, options) => got.push({ kind, detail, options })
   const cfg = {
-    confirmation: { approval: true, askUserQuestion: 'auto', timeoutMs: 600_000, notifyDecided: false, questionMaxChars: 120 },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 600_000, notifyDecided: false, questionMaxChars: 120 },
     rootOnly: true,
   }
   const dispose = installConfirmationTrigger(ctx, cfg, {
@@ -646,7 +851,7 @@ await test('触发源2：dispose 补发边界（已决不补发 / timeoutMs=0 �
   const got = []
   const notify = (kind, detail, options) => got.push({ kind, detail, options })
   const cfg = {
-    confirmation: { approval: true, askUserQuestion: 'auto', timeoutMs: 600_000, notifyDecided: false, questionMaxChars: 120 },
+    confirmation: { approval: true, askUserQuestion: 'auto', smartApproval: false, timeoutMs: 600_000, notifyDecided: false, questionMaxChars: 120 },
     rootOnly: true,
   }
   const dispose = installConfirmationTrigger(ctx, cfg, {

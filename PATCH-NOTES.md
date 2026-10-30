@@ -16,6 +16,13 @@
 
 ## 修改
 
+- `lib/templates.js`（2026-10-30）
+  - `render` 新增条件段 `{{#key}}…{{/key}}`：字段为空（缺失 / `null` / 空串）时整段不输出，
+    有值才渲染内文（内文里变量照常替换，条件段可嵌套）；数字 `0` 算有值，不会被吞
+  - 花括号内允许空白（`{{ #key }}` / `{{ /key }}`）；自引用模板有 200 轮上限，正常模板一轮收敛
+  - 动机：本机 `message` 模板写的是 `【{{reason}}】用时 {{duration}}`，「用时」是字面文本，
+    而 `confirmation`（第一次弹确认请求）本来就不带 `duration`，于是渲染成「【需要人工确认】用时 」
+    这种半截文案。有了条件段，配置侧改成 `{{#duration}}…{{/duration}}` 就能整段收起
 - `lib/index.js`
   - `const cfg = createLiveConfig(withDefaults(config))`（原来是 `withDefaults(config)`）
   - SAPI 通道改成惰性重建：`getSapi()` 按「模板/音色/排队方式」的指纹重建，`sapi.enabled` 在 `lanesFor` 里每次现读
@@ -28,8 +35,23 @@
   - 记录每轮是否出现过 `tool/call`（`turn/start` 重置）与最近一条非注入来源的 `user/message.source.kind`
   - `turn/end` 依次过 `reasons` / `isRootSession` / `requireTools` / `sources` / `isSessionBusy`，再进冷却定时器
   - 定时器到达时按 `lastSentAt` + `minIntervalMs` 限流
+  - 2026-10-30 新增 `createTurnTracker()`：两个触发源共用的运行窗口（`turn/start` 置忙、`turn/end` 置闲），
+    目前只用来把**确认超时升级**攒到收尾 (`turnEnd.quietDuringTurn`)；首次提醒一律穿透。
+  - 2026-10-30 `approval/asked` 增加沉默窗口判定（`confirmation.smartApproval`）：
+    asked 之后先等 `smartApprovalWaitMs`（默认 1000ms）再发。依据是本机 `dsh-purge` 的 approval bypass
+    在 `decide()` 里直接 `return 'allowed-once'`，asked 与 decided 同一个 tick 接踵而至——窗口内被放行的静默，
+    没被放行的（拒绝/取消/不可用）带上结果说一声。动机：approval policy 被 purge 改成自动放行之后，
+    每一个待审批调用都弹一条，全是噪音。
+  - 新增 `pendingNote(held, firstMaxChars = 40)`：纯函数，没有待报项返回空串
+- `lib/index.js`（2026-10-30）
+  - `createTurnTracker()` 在 `apply` 里建一份，`installTurnEndTrigger` / `installConfirmationTrigger` 共用
+  - `turnEnd` 新增 `quietDuringTurn`（默认 `true`）与 `reportPending`（默认 `true`）
+  - `confirmation` 新增 `smartApproval`（默认 `true`）与 `smartApprovalWaitMs`（默认 `1000`）
+  - `notify()` 的 `turn-end` 分支把 `detail.note` 前置到正文；这条不受 `includeText` 隐私开关约束（它说的是「有几次」不是回复内容）
 - `lib/runtime-config.js`
   - `EDITABLE` / `RANGES` 增加 `enabled`、`sessionDefault`、`turnEnd.minIntervalMs`、`turnEnd.requireTools`、`turnEnd.sources`
+  - 2026-10-30：`EDITABLE` 增加 `turnEnd.quietDuringTurn`、`turnEnd.reportPending`、
+    `confirmation.smartApproval`、`confirmation.smartApprovalWaitMs`（设置页开关，写完即生效）
   - `EDITABLE` 增加 `style.appName` / `style.icon`（2026-10-29）：只用来记住设置页用过什么，真正生效靠宿主转给本机网关卡
   - 新增按会话覆盖表 `sessions.json`（`readSessionOverrides` / `writeSessionOverride` / `clearSessionOverrides`），与 `ui-config.json` 分开存
   - 新增 `homeDir()`，供设置页定位 `storages/session_projcache`
@@ -45,6 +67,10 @@
 - `lib/client.js`
   - 设置页新增「通知开关」一段：总开关、新对话默认、按对话管理列表
   - 「什么时候提醒」补三项：同对话最小间隔、这轮没干活就不提醒、只提醒你发起的
+  - 2026-10-30：「什么时候提醒」再补两项 —— 「干活时别打扰」（`turnEnd.quietDuringTurn`）、
+    「收尾时报一下攒了几次」（`turnEnd.reportPending`）
+  - 2026-10-30：「要你动手的时候」补两项 —— 「自动放行就别吵」（`confirmation.smartApproval`）、
+    「等几秒算『真在等人』」（`confirmation.smartApprovalWaitMs`）
   - 2026-10-29：所有分类改成可折叠表头（`段` 组件），展开状态按标题记在 `localStorage`，
     默认只有「通知开关」是展开的
   - 2026-10-29：新增「通知样式」一段：改通知头部的应用名、选本地图片当图标（读成 base64 交给网关）、

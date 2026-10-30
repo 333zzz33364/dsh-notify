@@ -26,12 +26,16 @@
           cooldownMs: 15000
           minIntervalMs: 90000
           requireTools: true
+          quietDuringTurn: true
+          reportPending: true
           sources: [user, qq]
           includeText: false
           textMaxChars: 500
         confirmation:
           approval: true
           askUserQuestion: auto
+          smartApproval: true
+          smartApprovalWaitMs: 1000
           timeoutMs: 600000
           notifyDecided: false
           includeQuestion: true
