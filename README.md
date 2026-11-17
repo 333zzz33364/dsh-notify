@@ -79,6 +79,24 @@ With `tools.notify.enabled: true`, the model gains a `notify` tool: `{ message: 
 
 **Privacy note**: a model-initiated message is explicit content — it bypasses the `turnEnd.includeText` privacy switch and appears verbatim in the notification. The tool is off by default for exactly this reason: enabling it authorizes the model to push arbitrary text to every configured channel.
 
+## App icon badge (desktop shell only)
+
+`turn-end` also bumps an unread counter. A DSH **desktop** install reads it every 3 seconds and paints the
+number on the app icon: Windows uses `BrowserWindow.setOverlayIcon()` — a 32×32 badge in the corner of the
+taskbar button — and macOS uses `app.dock.setBadge()`. The counter lives in `$DSH_HOME/dsh-notify/badge.json`,
+survives restarts, and is cleared the moment the window takes focus.
+
+- `GET /api/dsh-notify/badge` → `{ count, enabled, banner, max, at, file }`
+- `POST /api/dsh-notify/badge/clear` → zero it
+
+The painting half lives in the desktop shell (`resources/app/lib/main.js`), not in this package — a headless
+install just accumulates the number and never draws anything. `PATCH-NOTES.md` has the exact patch, and
+`assets/badge/*.png` holds the digit images.
+
+`badge.banner: false` gives you "number only": a turn-end is counted and returns before any channel runs, so
+no toast, no voice, no webhook. Confirmation notices ignore that switch — those are someone actually waiting
+for an answer.
+
 ## Channels
 
 ### HTTP (lib/channels/http.js)
@@ -130,6 +148,9 @@ approval  → 【需要人工确认】npm
 |---|---|---|
 | `enabled` | `true` | master switch; off sends nothing (the test button still works) |
 | `sessionDefault` | `true` | default for new sessions; each session can be overridden in settings |
+| `badge.enabled` | `true` | turn-end bumps an unread count painted on the app icon by the desktop shell |
+| `badge.banner` | `true` | `false` = count only: no toast, no voice, no webhook for turn-end |
+| `badge.max` | `99` | display cap; the Windows overlay badge draws `9+` above nine |
 | `turnEnd.reasons` | `[completed, error, blocked, max-tokens]` | trigger whitelist; explicit `[]` disables this trigger |
 | `turnEnd.cooldownMs` | `15000` | quiet window after turn end (ms); a new turn inside it cancels |
 | `turnEnd.minIntervalMs` | `90000` | minimum gap between two notifications in the same session (ms, `0` = off) |

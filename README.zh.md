@@ -88,6 +88,21 @@ per-session 挂起表 + `ctx.timeout()` 定时器（effect 管理，插件销毁
 
 **隐私提醒**：模型主动发的就是显式内容，不套 `turnEnd.includeText` 隐私开关——message 原样出现在通知里。默认关闭正是为此：开启即授权模型往你配置的所有通道推任意文本。
 
+## 图标角标（仅桌面壳）
+
+`turn-end` 还会给未读数 +1。DSH **桌面版**每 3 秒读一次，把数字画到应用图标上：Windows 用
+`BrowserWindow.setOverlayIcon()`——任务栏按钮右下角一块 32×32 的小徽标；macOS 用 `app.dock.setBadge()`，
+就是 Dock 上的那个红圈。计数存在 `$DSH_HOME/dsh-notify/badge.json`，重启不清，窗口一拿到焦点就清零。
+
+- `GET /api/dsh-notify/badge` → `{ count, enabled, banner, max, at, file }`
+- `POST /api/dsh-notify/badge/clear` → 清零
+
+「画」的那一半在桌面壳里（`resources/app/lib/main.js`），不在这个包里——headless 部署只会让数字静静地涨，
+没有图标可画。具体补丁见 `PATCH-NOTES.md`，数字图在 `assets/badge/*.png`。
+
+`badge.banner: false` 就是「只亮数字」：turn 结束记完数就返回，不弹窗、不发语音、不推通道。确认类通知
+不受这个开关影响——那是真的有人在等你回话。
+
 ## 通道
 
 ### HTTP（lib/channels/http.js）
@@ -139,6 +154,9 @@ spawn **powershell.exe**（Windows PowerShell 5.1，不是 pwsh）`-NoProfile -N
 |---|---|---|
 | `enabled` | `true` | 总开关；关掉一条通知都不发（测试按钮不受影响） |
 | `sessionDefault` | `true` | 新对话默认是否通知；单个对话可在设置页覆盖 |
+| `badge.enabled` | `true` | turn 结束时在应用图标上累加未读数（由桌面壳绘制） |
+| `badge.banner` | `true` | `false` = 只亮数字：不弹窗、不发语音、不推通道 |
+| `badge.max` | `99` | 显示上限；Windows 的小徽标超过 9 一律画成「9+」 |
 | `turnEnd.reasons` | `[completed, error, blocked, max-tokens]` | 触发白名单；显式 `[]` 关闭本触发源 |
 | `turnEnd.cooldownMs` | `15000` | 结束后等多久再发（ms，`0` = 立刻）。等待期间来了新 turn 就取消 |
 | `turnEnd.minIntervalMs` | `90000` | 同一会话两次通知的最小间隔（ms，`0` = 关闭） |
