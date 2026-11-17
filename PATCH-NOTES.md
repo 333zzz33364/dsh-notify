@@ -13,6 +13,7 @@
 | `lib/settings-api.js` | 宿主侧接口 `/api/dsh-notify/*`（config / reset / test / status / sessions），经 `ctx.inject(['webServer'])` 挂载，headless 自动跳过；test 和 status 会探本机 HTTP 通道的 `/health`，死掉的本地中转能一眼看出来 |
 | `lib/client.js` | 浏览器半端：设置 →「14. 任务通知」一页，走 `settings.section` 插槽 |
 | `lib/supervisor.js` | 网关看护：本机常驻的弹窗进程掉了就按配置的 `http.supervisor.commands` 拉起来；`superviseStep` 是纯函数，冷却/loopback/命令白名单都在里面 |
+| `lib/badge.js` | 未读完成数：`turn-end` 一次 +1，桌面壳读 `/api/dsh-notify/badge` 画到图标上，回到窗口清零；存 `$DSH_HOME/dsh-notify/badge.json`，重启不清 |
 
 ## 修改
 
@@ -93,8 +94,31 @@
 
 ## 能热改 / 要重启
 
-- **热改（设置页即时生效）**：`turnEnd.*`、`confirmation.*`、`rootOnly`、`sapi.*`、`escalation.*`
+- **热改（设置页即时生效）**：`turnEnd.*`、`confirmation.*`、`rootOnly`、`badge.*`、`sapi.*`、`escalation.*`
 - **要重启**：`http` / `a2a` / `mcp` 的通道列表（通道对象启动时建好）、`tools.notify.enabled`
+
+## 图标角标（2026-11-17）
+
+插件只负责「数」，「画」在桌面壳那一半：
+
+- `GET /api/dsh-notify/badge` → `{ count, enabled, banner, max, at, file }`
+- `POST /api/dsh-notify/badge/clear` → 清零
+
+桌面壳（`<DSH 安装目录>\resources\app\lib\main.js`，`createMainWindow` 内）每 3 秒读一次这个接口，
+计数变了就画：Windows 用 `window.setOverlayIcon()` 叠一张 `lib/badge/<数字>.png`（红圆白字，32×32，
+任务栏右下角的小徽标），macOS 用 `app.dock.setBadge()`（Dock 上的红圈）。窗口 `focus` 时清零。
+
+配置三项：
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `badge.enabled` | `true` | 任务完成时在图标上显示数字；关掉就不数也不画 |
+| `badge.banner` | `true` | 关掉 → `turn-end` 记完数就返回，不弹横幅、不发语音、不推通道（确认类通知不受影响） |
+| `badge.max` | `99` | 显示上限；Windows 的小徽标放不下两位数，`>9` 一律画成「9+」 |
+
+桌面壳那一半是改打包产物的，**DSH 升级会把 `main.js` 盖掉**，角标随之失灵（插件侧不受影响）。
+盖掉以后把 `main.js.bak-20261117-badge` 里那段「任务完成角标」重新贴回 `createMainWindow`，
+再把 `assets/badge/*.png` 拷回 `resources\app\lib\badge\` 即可（这套 32×32 的红圆白字图就放在插件目录里）。
 
 ## 边界
 
