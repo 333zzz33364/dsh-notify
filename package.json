@@ -46,7 +46,8 @@
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "scripts": {
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:client": "node scripts/smoke-client.mjs"
   },
   "engines": {
     "node": ">=18.17"

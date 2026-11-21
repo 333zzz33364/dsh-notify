@@ -97,7 +97,7 @@
 - **热改（设置页即时生效）**：`turnEnd.*`、`confirmation.*`、`rootOnly`、`badge.*`、`sapi.*`、`escalation.*`
 - **要重启**：`http` / `a2a` / `mcp` 的通道列表（通道对象启动时建好）、`tools.notify.enabled`
 
-## 图标角标（2026-11-17）
+## 图标角标（2026-11-17，现已被下一节取代）
 
 插件只负责「数」，「画」在桌面壳那一半：
 
@@ -119,6 +119,78 @@
 桌面壳那一半是改打包产物的，**DSH 升级会把 `main.js` 盖掉**，角标随之失灵（插件侧不受影响）。
 盖掉以后把 `main.js.bak-20261117-badge` 里那段「任务完成角标」重新贴回 `createMainWindow`，
 再把 `assets/badge/*.png` 拷回 `resources\app\lib\badge\` 即可（这套 32×32 的红圆白字图就放在插件目录里）。
+
+## 壳补丁：任务栏角标（2026-11-20 重打）
+
+11-17 那套 `main.js` 补丁随着 `resources\app` 被打成 `app.asar` 一起没了，本轮把它重新打进 asar。
+
+- 打在哪：`D:\ai2\desktop\resources\app.asar` 里的 `lib/main.js`
+  - 新增 `NOTIFY_BADGE_ICONS`（11 张 32×32 的 base64 图，来自本包 `assets/badge/`）
+  - 新增 `attachNotifyBadge(window)`：每 2 秒读 `$DSH_HOME/dsh-notify/badge.json`（只读不写）
+  - **只画任务栏图标右下角那一小块，不动托盘图标**（托盘换过一版，主人说不要换）
+  - 图按 **13×13** 画 —— 那是 Windows 100% 缩放下那块徽标的实际尺寸；**5×7 点阵**（13−5=8，左右各留 4 像素，
+    正好居中），1–9 清楚，超过 9 停在 9。之前用 4 宽字模，13−4=9 是奇数，怎么摆都偏半格
+  - **清零**（v10，2026-11-21）：①点任务栏图标把窗口叫回来（`focus`）→ 立刻清，不用等；
+    ②窗口一直在眼前（一直盯着、没切走）→ 数字露 3 秒就清。清法是壳自己
+    `POST /api/dsh-notify/badge/clear`。首帧也要开始计时（`count > 0 && shownAt === 0` 就置 `shownAt`）
+    ——否则启动时已经存在的数字会一直挂着，这是 v8 的 bug
+  - 轮询改成 **1 秒一次**（`setInterval(tick, 1e3)`），3 秒那道判定才落得准；清零请求没落地
+    （宿主没起来）会把计时还回去，下一秒再试
+  - **v11 修的真根因（2026-11-21 10:05 实测）**：页面是 `dsh-app://app/`（自定义协议），旧代码只在
+    `http:` / `https:` 才发清零请求，其余静默返回 —— **壳一次都没清过**。现在改成
+    `webContents.executeJavaScript("fetch('/api/dsh-notify/badge/clear', …)")`，在页面里发同源请求，
+    跟页面是什么协议无关；页面还没就绪时再退回主进程 fetch。实测日志：`paint count=4 focus=false
+    visible=false url=` → 窗口显示后 `clear-now why=focus` → `clear-page ok=true` → `paint count=0`
+  - 诊断日志：`$DSH_HOME/dsh-notify/shell-badge.log`，只在计数变化、清零时各写一行；出问题先看它
+  - **v12 两处修正（2026-11-21 10:10）**：
+    - **居中**：圆心原来按 `FillEllipse(0.4, 0.4, 12.2, 12.2)` 算，几何中心落在 **6.5**，而 5×7 字模的中心是
+      **6.0** —— 差半格，13px 里就是肉眼可见的偏。改成先算字形中心，再把圆的直径取 `size-2` 让圆心压在
+      6.0 上（`make-icons9.ps1`）。验证：新图 0 行与 12 行全透明、1 行与 11 行同为 5 宽、2/10 行同为 7 宽，
+      上下左右完全镜像
+    - **清不掉**：清零请求确实发出去也成功了（日志 `clear-page ok=true`、`epoch` 一路涨），是**画面残留** ——
+      `setOverlayIcon(undefined, "")` 在 Windows 上不一定刷新掉，改成传 `null`
+  - 源图由 `tools/shell-patch/make-icons.ps1` 现生成（13px 与 26px 两套），不入库
+  - **壳内通知**：数字涨了并且 `ui-config.json` 的 `badge.banner` 没关，就用 `new Notification()` 弹一条
+    （标题「任务通知」，正文「任务完成｜N 轮跑完了还没看」，点它把窗口叫回来）——弹窗不再依赖外挂的 9775 网关；
+    窗口首帧只画不弹，免得重启时补弹历史
+  - macOS 走 `app.dock.setBadge()`
+- 清零（2026-11-21）：`lib/client.js` 里改成**窗口在眼前时数字出现 3 秒自动零**；切走之后涨起来的留着，
+  回到窗口再清。原来只在 blur→focus 时清，一直坐在窗口前就永远清不掉
+  - 在 `createMainWindow` 里 `mainWindow = window;` 之后调用它
+  - 清零仍归浏览器半端（窗口重新被看到时它自己 POST `/badge/clear`），壳不写文件 —— 免得内存与盘上的数打架
+- 备份：`D:\ai2\desktop\resources\app.asar.bak-20261120-badge`（原件，209083008 字节）
+- 回滚：双击 `工具\通知\角标回滚.bat`
+- DSH 升级后重打：完全退出 DSH，双击 `工具\通知\重打角标补丁.bat`
+- 工具与产物：`tools/shell-patch/`（`inspect-asar.mjs` / `read-asar.mjs` / `patch-main.mjs` /
+  `pack-asar.mjs` / `verify-asar.mjs` / `make-icons.ps1`）。**重打步骤和六个坑都写在
+  `tools/shell-patch/README.md`** —— 下次 DSH 升级后先看那份，别从头摸一遍
+- 校验过的事：新 asar 21722 个条目、1666 个 unpacked、20056 份数据逐个对 header 的 SHA256 全部一致；
+  header 的 16 字节结构与 padding 规则与原文件完全相同（headerSize 5671400、dataStart 5671408）
+- 前置条件查过：`EnableEmbeddedAsarIntegrityValidation` = disabled、`OnlyLoadAppFromAsar` = disabled，
+  所以改 asar 不会被 fuse 拦
+
+## 未读数字改画在浏览器半端（2026-11-20）
+
+**为什么改**：11-17 那套壳补丁写在 `resources\app\lib\main.js`（未打包的 app 目录）。11-18 19:34 那次
+DSH 升级把资源重新打成 `resources\app.asar`，`main.js` 那一段就没了 —— 现在在 `app.asar` 里搜
+`setOverlayIcon` / `setBadgeCount` / `getFocusedWindow` / `requestUserAttention` / `dsh-notify` 全是 0 命中，
+只剩 Electron 自己的 `BrowserWindow` 和 `tray.ico`。于是：`badge.json` 一直在写数，却没有任何人读它。
+
+**改法**：数还是插件记，画交给浏览器半端，不再依赖壳。
+
+- `lib/badge.js`：状态从 `{ count, at }` 扩到 `{ count, at, lastReason, epoch }`；`bump(reason)` 记下这一条的原因；
+  `clear()` 保留 `at`、只把 `epoch` 继续往上推（客户端靠 epoch 判断「变过了」）；旧文件缺字段补空值，坏文件当 0
+- `lib/index.js`：`badge.bump(detail.kind)`；新增 `badge.digits`（默认 `true`），关掉就只记账不画
+- `lib/settings-api.js`：`GET /api/dsh-notify/badge` 多返回 `lastReason`、`epoch`、`digits`；
+  `POST /badge/clear` 返回清零后的 `epoch`
+- `lib/client.js`：新增 `未读徽章`，注册进 `sidebar.toggle.badge` 插槽（`DesktopUpdateBadge` 也占这个位置，两者并排）；
+  每 5 秒轮询 `/badge`（页面隐藏时跳过），红底白字小圆、超过 `badge.max` 显示 `99+`、点一下清零；
+  同时给窗口标题贴 `(4)` 前缀，并用 `MutationObserver` 盯着 `<title>`（会话标题会整个重写，得改回来）；
+  从别处切回来（blur→focus、标签页重新可见）才清零 —— 一直盯着窗口不清，新数要留在眼前
+- 设置页：「图标角标」改名「未读数字」，加「在界面上画出来」一行，说明改成实际情形
+
+**要恢复任务栏图标那块小徽标**：得动 `app.asar`（解包 → 在 `createMainWindow` 里贴回那段补丁 + 把
+`assets/badge/*.png` 放到 `app` 目录 → 重打包）。改坏了 DSH 起不来，单开一轮再评估。
 
 ## 边界
 

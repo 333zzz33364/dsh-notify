@@ -8,3 +8,9 @@ config.json
 # 改动前的本地备份（*.bak-<时间戳>），不入库
 *.bak-*
 
+# 壳补丁的中间产物：图标由 make-icons.ps1 现生成，main.*.js 与 asar 都能重建
+tools/shell-patch/icons/
+tools/shell-patch/main.orig.js
+tools/shell-patch/main.patched.js
+tools/shell-patch/*.asar
+

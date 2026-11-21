@@ -5,7 +5,7 @@
 // 含 dispose 补发语义）。
 
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createQueue, retryTask, sleep } from '../lib/queue.js'
@@ -26,6 +26,7 @@ import {
 import {
   clearSessionOverrides, readSessionOverrides, sessionsPath, writeSessionOverride, writeSessionOverrides,
 } from '../lib/runtime-config.js'
+import { createBadgeStore } from '../lib/badge.js'
 import { isLoopback, superviseStep } from '../lib/supervisor.js'
 
 let passed = 0
@@ -1114,6 +1115,48 @@ await test('notify-tool：execute 校验参数并入队，子会话静默，缺 
   assert.equal(got.length, 1, '子会话不发送')
 
   await assert.rejects(() => tool.execute({}, { agent: { session: root } }), /message 必填/)
+})
+
+// ---------------------------------------------------------------------------
+// badge：未读数字（数在 host 记，画在浏览器半端；这里验记账那半边）
+// ---------------------------------------------------------------------------
+await test('badge：bump 记原因、clear 只涨 epoch、老文件与坏文件都能读', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-notify-badge-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    const store = createBadgeStore()
+    assert.deepEqual(store.snapshot(), { count: 0, at: 0, lastReason: '', epoch: 0 })
+
+    assert.equal(store.bump('completed'), 1)
+    assert.equal(store.bump('error'), 2)
+    const after = store.snapshot()
+    assert.equal(after.count, 2)
+    assert.equal(after.lastReason, 'error')
+    assert.equal(after.epoch, 2)
+
+    // 落盘能原样读回（模拟重启 DSH 后数字还在）
+    assert.deepEqual(createBadgeStore().snapshot(), after)
+
+    // 老版本只写 count/at：读的时候补空字段，数不丢
+    writeFileSync(store.path(), JSON.stringify({ count: 7, at: 123 }), 'utf8')
+    const legacy = createBadgeStore()
+    assert.deepEqual(legacy.snapshot(), { count: 7, at: 123, lastReason: '', epoch: 0 })
+
+    // 清零：count 归 0、原因清空，epoch 继续涨（客户端靠它判断「变过了」）
+    assert.equal(legacy.clear(), 0)
+    const cleared = legacy.snapshot()
+    assert.equal(cleared.count, 0)
+    assert.equal(cleared.lastReason, '')
+    assert.equal(cleared.epoch, 1)
+
+    // 坏文件当 0，不抛
+    writeFileSync(store.path(), '{ 这不是 JSON', 'utf8')
+    assert.equal(createBadgeStore().snapshot().count, 0)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  }
 })
 
 console.log('')
