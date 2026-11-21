@@ -131,6 +131,51 @@ copy "<DSH_INSTALL>\resources\app.asar.bak" "<DSH_INSTALL>\resources\app.asar"
 补丁只在 `lib/main.js` 里多了 `attachNotifyBadge` 一段（含 base64 图），
 不改别的文件，所以回滚不需要卸载任何东西。
 
+## 补丁到底在不在：三步定位
+
+从「改了没反应」到「知道断在哪一环」，按这个顺序走，别一上来就重打。
+
+```sh
+# ① 代码在不在 asar 里
+node read-asar.mjs "<DSH_INSTALL>\resources\app.asar" lib/main.js > main.check.js
+node check-patch.mjs main.check.js
+```
+
+```
+OK    补丁函数已注入
+OK    主窗口里调用了它
+OK    清零走页面内同源请求
+OK    3 秒兜底清零
+OK    focus 立刻清
+OK    清除传 null（不是 undefined）
+OK    写了诊断日志
+版本注释：2026-11-21 v12
+```
+
+有 `MISS` 就是没打进去，回上面五步。
+
+```sh
+# ② 代码跑没跑：日志里必须有 attach 那一行
+tail -n 5 "$DSH_HOME/dsh-notify/shell-badge.log"
+```
+
+```
+2026-11-21T02:32:58.507Z attach ok pid=75460
+```
+
+没有 `attach ok` = 补丁进 asar 了但 `createMainWindow` 没走到（或者页面换了创建路径）。
+
+```sh
+# ③ 跑了但不清：读同一段时间里的 paint / clear 行
+```
+
+- `paint count=N` 后面**没有** `clear-now` → 兜底条件没成立，看那行的 `focus=` / `visible=` / `min=`
+- 有 `clear-now` 但紧跟 `clear-page-error` 或 `clear-main-skip` → 请求没发出去，看 `protocol=`
+- 全绿（`clear-page ok=true` + `paint count=0`）但屏幕上数字还在 → **画面没刷新**，见坑 3
+
+**一条通用经验：Electron 主进程的 `console.log` 在这套壳里看不到。** 想观测就得往文件写
+（`appendFileSync`），而且要写在"谁调用、谁失败"两处，光写一个"我进来了"不够用。
+
 ## 诊断
 
 壳会在 `$DSH_HOME/dsh-notify/shell-badge.log` 里写两种行，只在计数变化和清零时各写一行：
